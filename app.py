@@ -32,7 +32,8 @@ app.config['DATABASE_URL'] = os.getenv('DATABASE_URL')
 # Sample route to show environment
 @app.route('/')
 def index():
-    return f"Flask Server Running in {app.config['ENV']} mode with database at {app.config['DATABASE_URL']}"
+    response_text = f"Flask Server Running in {app.config['ENV']} mode with database at {app.config['DATABASE_URL']}"
+    return jsonify({"status": "success", "response": response_text}), 200
 
 @app.route('/health')
 def health_check():
