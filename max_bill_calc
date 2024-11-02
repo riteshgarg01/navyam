@@ -1,0 +1,43 @@
+import sqlite3
+
+# Connect to the database
+def connect_db():
+    return sqlite3.connect('solar.db')
+
+# Calculate the max bill for each slab and update the database
+def update_max_bill():
+    conn = connect_db()
+    cursor = conn.cursor()
+    
+    # Fetch all tariff data
+    query = "SELECT id, min_slab, max_slab, fixed, variable FROM tariffs"
+    cursor.execute(query)
+    tariffs = cursor.fetchall()
+    
+    # Calculate and update the max bill for each slab
+    for tariff in tariffs:
+        tariff_id = tariff[0]
+        min_slab = tariff[1]
+        max_slab = tariff[2]
+        fixed_charge = tariff[3]
+        variable_rate = tariff[4]
+
+        # Skip if it's the 'infinity' slab
+        if max_slab == 999999:
+            max_bill = None
+        else:
+            # Calculate units in the slab and then the max bill
+            slab_units = max_slab - min_slab + 1
+            max_bill = fixed_charge + (slab_units * variable_rate)
+
+        # Update the max_bill column in the database
+        update_query = "UPDATE tariffs SET max_bill = ? WHERE id = ?"
+        cursor.execute(update_query, (max_bill, tariff_id))
+    
+    # Commit the changes and close the connection
+    conn.commit()
+    conn.close()
+
+# Run the update
+update_max_bill()
+print("Max bills updated successfully!")

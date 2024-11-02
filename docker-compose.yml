@@ -1,0 +1,25 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:latest
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=Cricket123
+      - POSTGRES_DB=navyam
+    volumes:
+      - pgdata:/var/lib/postgresql/data  # Mount volume to the PostgreSQL data directory
+    ports:
+      - "${PORT_MAPPING:-}"  # Only applies if PORT_MAPPING is set
+
+  flask-app:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql://postgres:Cricket123@postgres:5432/navyam
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"  # Flask app port
+  
+volumes:
+  pgdata:
+    driver: local
