@@ -25,4 +25,4 @@ ENV FLASK_ENV=production
 ENV FLASK_APP=app.py
 
 # Run the application using Gunicorn as the WSGI server
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:80", "app:app"]
