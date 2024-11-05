@@ -212,11 +212,13 @@ def calculate_cost_and_subsidy(system_size, location_tier):
     overall_cost_queried = cursor.fetchone()
     conn.close()
     
-    if not overall_cost_queried:  # If no data for the given location & system size, use max cost
+    if overall_cost_queried is None:  # If no data for the given location & system size, use max cost
         app.logger.debug(f"MISSING DATA: No cost found for {location_tier} and {system_size}kW. Using Max Cost as default.")
-        overall_cost_queried[0] = 1000000
+        #overall_cost_queried[0] = 1000000
+        overall_cost = 1000000  # Set to default value
     else:
-        app.logger.debug(f"Final overall cost received for {location_tier} and {system_size}kW is {overall_cost_queried[0]}.")
+        overall_cost = overall_cost_queried[0]
+        app.logger.debug(f"Final overall cost received for {location_tier} and {system_size}kW is {overall_cost}.")
 
     # Government subsidy logic
     if system_size >= 3:
@@ -226,7 +228,7 @@ def calculate_cost_and_subsidy(system_size, location_tier):
     else:
         subsidy = 30000
     
-    final_cost = overall_cost_queried[0] - subsidy
+    final_cost = overall_cost - subsidy
 
     return final_cost
 
