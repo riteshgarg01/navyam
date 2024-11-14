@@ -14,6 +14,8 @@ services:
 
   flask-app:
     build: .
+    env_file:
+      - .env.dev
     environment:
       - DATABASE_URL=postgresql://postgres:Cricket123@postgres:5432/navyam
     volumes:
