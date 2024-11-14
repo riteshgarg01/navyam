@@ -20,9 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 EXPOSE 8000
 
 # Define environment variable for Flask to run in production mode
-ENV FLASK_ENV=production
+#ENV FLASK_ENV=production
 #ENV FLASK_DEBUG=1
 ENV FLASK_APP=app.py
 
 # Run the application using Gunicorn as the WSGI server
-CMD ["gunicorn", "-b", "0.0.0.0:80", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]

@@ -7,18 +7,21 @@ services:
       - POSTGRES_PASSWORD=Cricket123
       - POSTGRES_DB=navyam
     volumes:
+      - ./db-init:/docker-entrypoint-initdb.d  # Mount local directory to container
       - pgdata:/var/lib/postgresql/data  # Mount volume to the PostgreSQL data directory
     ports:
-      - "${PORT_MAPPING:-}"  # Only applies if PORT_MAPPING is set
+      - "5432:5432"  # Only applies if PORT_MAPPING is set
 
   flask-app:
     build: .
     environment:
       - DATABASE_URL=postgresql://postgres:Cricket123@postgres:5432/navyam
-    depends_on:
-      - postgres
+    volumes:
+      - .:/app  # Sync code changes directly to container
     ports:
       - "8000:8000"  # Flask app port
+    depends_on:
+      - postgres
   
 volumes:
   pgdata:
