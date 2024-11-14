@@ -23,6 +23,8 @@ EXPOSE 8000
 #ENV FLASK_ENV=production
 #ENV FLASK_DEBUG=1
 ENV FLASK_APP=app.py
+#Default to 80 for production
+ENV GUNICORN_PORT=80
 
 # Run the application using Gunicorn as the WSGI server
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:${GUNICORN_PORT}", "app:app"]

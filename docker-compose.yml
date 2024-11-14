@@ -18,6 +18,7 @@ services:
       - .env.dev
     environment:
       - DATABASE_URL=postgresql://postgres:Cricket123@postgres:5432/navyam
+      - GUNICORN_PORT=8000  # Override production default for development
     volumes:
       - .:/app  # Sync code changes directly to container
     ports:
