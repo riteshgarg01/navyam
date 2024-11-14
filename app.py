@@ -732,4 +732,4 @@ def solar_cost_estimator():
         return jsonify({"status": "error", "message": str(e)}),500
 
 if __name__ == '__main__':
-    app.run(Debug=true)
+    app.run()
