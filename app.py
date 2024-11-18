@@ -214,7 +214,6 @@ def calculate_cost_and_subsidy(system_size, location_tier):
     
     if overall_cost_queried is None:  # If no data for the given location & system size, use max cost
         app.logger.debug(f"MISSING DATA: No cost found for {location_tier} and {system_size}kW. Using Max Cost as default.")
-        #overall_cost_queried[0] = 1000000
         overall_cost = 1000000  # Set to default value
     else:
         overall_cost = overall_cost_queried[0]
@@ -228,7 +227,19 @@ def calculate_cost_and_subsidy(system_size, location_tier):
     else:
         subsidy = 30000
     
-    final_cost = overall_cost - subsidy
+    # Net metering charges logic
+    if system_size >= 3:
+        net_metering = 25000
+    elif system_size == 2:
+        net_metering = 17500
+    else:
+        net_metering = 10000
+    
+    app.logger.debug(f"For {system_size}kW - Subsidy: ₹{subsidy}, Net Metering: ₹{net_metering}")
+    
+    # Final cost = Overall cost - Subsidy + Net Metering
+    final_cost = overall_cost - subsidy + net_metering
+    app.logger.debug(f"Cost breakdown - Overall: ₹{overall_cost}, Subsidy: ₹{subsidy}, Net Metering: ₹{net_metering}, Final: ₹{final_cost}")
 
     return final_cost
 
@@ -321,15 +332,15 @@ def calculate_monthly_savings_with_solar(monthly_consumption, monthly_generation
         app.logger.debug(f"Reduced consumption for Month={i} is: {reduced_consumption}") 
 
         # Step 2: Calculate the original bill based on the original consumption
-        original_bill = calculate_monthly_bill(int(consumption), tariffs)
+        original_bill = round(calculate_monthly_bill(int(consumption), tariffs))  # Round to integer
         app.logger.debug(f"original Bill Amount for Month={i} is: {original_bill}")                   
         
         # Step 3: Calculate the reduced bill based on reduced consumption
-        reduced_bill = calculate_monthly_bill(reduced_consumption, tariffs)
+        reduced_bill = round(calculate_monthly_bill(reduced_consumption, tariffs))  # Round to integer
         app.logger.debug(f"reduced Bill Amount for Month={i} is: {reduced_bill}")                   
        
         # Step 4: Calculate savings (original bill - reduced bill)
-        savings = original_bill - reduced_bill
+        savings = round(original_bill - reduced_bill)  # Round to integer
         monthly_savings.append(savings)
         app.logger.debug(f"Monthly Savings for Month={i} is: {savings}")
         i+=1              
@@ -387,6 +398,121 @@ def send_message(message, to_number):
 #         return jsonify({"status": "success"}), 200
 #     else:
 #         return jsonify({"status": "error"}), 400
+
+def calculate_system_size_for_target_reduction(monthly_consumption, rooftop_area, ac_monthly, reduction_target=1.0):
+    """
+    Calculate system size considering monthly variations in consumption and generation.
+    Uses peak monthly consumption to ensure adequate coverage.
+    """
+    
+    # Calculate required size for each month
+    monthly_sizes = []
+    for i in range(12):
+        if ac_monthly[i] > 0:  # Avoid division by zero
+            # Size needed for this month = (consumption * reduction_target) / generation_per_kw
+            size_needed = (monthly_consumption[i] * reduction_target) / ac_monthly[i]
+            monthly_sizes.append(size_needed)
+            app.logger.debug(f"Month {i+1}: Consumption={monthly_consumption[i]}, "
+                           f"Generation per kW={ac_monthly[i]}, Size needed={size_needed}")
+    
+    # Use the maximum monthly size needed to ensure coverage in peak months
+    system_size_by_energy = max(monthly_sizes)
+    app.logger.debug(f"Maximum system size needed by energy: {system_size_by_energy}")
+    
+    # Calculate size limitation by area
+    sq_ft_per_kw = 120
+    system_size_by_area = rooftop_area / sq_ft_per_kw    
+    app.logger.debug(f"System size limited by area: {system_size_by_area}")
+    
+    # Get final recommended size
+    recommended_size = min(system_size_by_energy, system_size_by_area)
+    app.logger.debug(f"Final recommended size for {reduction_target*100}% reduction: {recommended_size}")
+    
+    return recommended_size
+
+# Add the new function here
+def find_optimal_system_size(monthly_consumption, rooftop_area, ac_monthly, state_tariffs, location_tier):
+    """
+    Find optimal system size considering both ROI and savings.
+    Picks between top 2 ROI options, favoring higher savings if ROIs are similar.
+    """
+    best_options = []  # List to store top 2 options
+    max_possible_size = min(int(rooftop_area / 120), 10)  # Limited by area and practical max of 10kW, rounded down
+    
+    app.logger.debug(f"Starting optimal size calculation - Rooftop area: {rooftop_area} sq ft, Max possible size: {max_possible_size}kW")
+    app.logger.debug(f"Monthly consumption pattern: {monthly_consumption}")
+    app.logger.debug(f"Monthly generation per kW pattern: {ac_monthly}")
+    
+    # Test different system sizes in 1kW increments
+    for size in range(1, max_possible_size + 1):
+        app.logger.debug(f"\nTesting system size: {size}kW")
+        
+        # Calculate generation for this size
+        monthly_generation = [g * size for g in ac_monthly]
+        app.logger.debug(f"Monthly generation for {size}kW: {monthly_generation}")
+        
+        # Calculate savings
+        monthly_savings = calculate_monthly_savings_with_solar(
+            monthly_consumption,
+            monthly_generation,
+            state_tariffs
+        )
+        yearly_savings = calculate_yearly_savings(monthly_savings)
+        app.logger.debug(f"Monthly savings for {size}kW: {monthly_savings}")
+        app.logger.debug(f"Yearly savings for {size}kW: ₹{yearly_savings}")
+        
+        # Calculate cost
+        system_cost = calculate_cost_and_subsidy(size, location_tier)
+        app.logger.debug(f"System cost for {size}kW: ₹{system_cost}")
+        
+        # Calculate ROI
+        roi = (yearly_savings / system_cost) * 100
+        app.logger.debug(f"ROI for {size}kW: {roi}%")
+        
+        # Store option
+        option = {
+            'size': size,
+            'roi': roi,
+            'yearly_savings': yearly_savings,
+            'system_cost': system_cost
+        }
+        
+        # Keep track of top 2 options by ROI
+        best_options.append(option)
+        best_options.sort(key=lambda x: x['roi'], reverse=True)
+        best_options = best_options[:2]  # Keep only top 2
+        app.logger.debug(f"Current top options: {best_options}")
+    
+    if len(best_options) < 2:
+        optimal_size = best_options[0]['size']
+        app.logger.debug(f"Only one option available. Selecting size: {optimal_size}kW")
+        return optimal_size
+    
+    # Compare top 2 options
+    roi_difference = abs(best_options[0]['roi'] - best_options[1]['roi'])
+    savings_ratio = best_options[1]['yearly_savings'] / best_options[0]['yearly_savings']
+    
+    app.logger.debug(f"\nComparing top 2 options:")
+    app.logger.debug(f"Option 1: Size={best_options[0]['size']}kW, ROI={best_options[0]['roi']}%, Savings=₹{best_options[0]['yearly_savings']}")
+    app.logger.debug(f"Option 2: Size={best_options[1]['size']}kW, ROI={best_options[1]['roi']}%, Savings=₹{best_options[1]['yearly_savings']}")
+    app.logger.debug(f"ROI difference: {roi_difference}%, Savings ratio: {savings_ratio}")
+    
+    # If ROIs are within 5% of each other and second option has at least 20% more savings
+    if roi_difference < 5 and savings_ratio > 1.2:
+        optimal_size = best_options[1]['size']
+        app.logger.debug(f"Selected second option due to significantly higher savings with similar ROI")
+    else:
+        optimal_size = best_options[0]['size']
+        app.logger.debug(f"Selected first option due to better ROI")
+    
+    app.logger.debug(f"\nOptimal system size calculation complete:")
+    app.logger.debug(f"Final optimal size: {optimal_size}kW")
+    app.logger.debug(f"Selected option details:")
+    app.logger.debug(f"ROI: {best_options[0]['roi'] if optimal_size == best_options[0]['size'] else best_options[1]['roi']}%")
+    app.logger.debug(f"Yearly savings: ₹{best_options[0]['yearly_savings'] if optimal_size == best_options[0]['size'] else best_options[1]['yearly_savings']}")
+    app.logger.debug(f"System cost: ₹{best_options[0]['system_cost'] if optimal_size == best_options[0]['size'] else best_options[1]['system_cost']}")
+    
+    return optimal_size
 
 @app.route('/webhook', methods=['POST'])
 def solar_cost_estimator():
@@ -515,201 +641,133 @@ def solar_cost_estimator():
                 return jsonify({"status": "success", "response": response_text}), 200
             
             elif user_step == 3:
-                # Final step: calculate and send cost estimation
+                app.logger.debug("Starting step 3 calculations")
                 user_data[user_phone]['rooftop_area'] = int(message_text)
-                user_data[user_phone]['step'] = 4                
-                #bill_amount = user_data[user_phone]['recent_bill']
-                rooftop_area = user_data[user_phone]['rooftop_area']
+                user_data[user_phone]['step'] = 4
+                
                 monthly_ac_generation_per_kW = user_data[user_phone]['ac_monthly']
                 monthly_energy_consumption = user_data[user_phone]['monthly_consumption']
-                app.logger.debug(f"Received monthly consumption: {user_data[user_phone]['monthly_consumption'] }")                   
+                rooftop_area = user_data[user_phone]['rooftop_area']
                 
-                # Estimate energy consumption
-                # energy_consumption = estimate_energy_consumption(bill_amount)
+                app.logger.debug(f"Input data - Rooftop area: {rooftop_area}, Monthly consumption: {monthly_energy_consumption}")
+
+                # Calculate system sizes for all options
+                app.logger.debug("Calculating full offset system size")
+                full_offset_size = calculate_system_size_for_target_reduction(
+                    monthly_energy_consumption, 
+                    rooftop_area, 
+                    monthly_ac_generation_per_kW, 
+                    1.0
+                )
                 
-                # Calculate system size and cost, get state tariffs and location tier to calculate savings
-                user_data[user_phone]['recommended_system_size'] = math.floor(calculate_system_size(monthly_energy_consumption, rooftop_area, monthly_ac_generation_per_kW))
+                app.logger.debug("Calculating half offset system size")
+                half_offset_size = calculate_system_size_for_target_reduction(
+                    monthly_energy_consumption, 
+                    rooftop_area, 
+                    monthly_ac_generation_per_kW, 
+                    0.5
+                )
+
+                # Get state tariffs and location tier for optimal calculation
                 state_tariffs = get_tariff_for_state(user_data[user_phone]['state'])
-                app.logger.debug(f"Received Tariffs to calculate savings: {state_tariffs}")
                 location_tier = get_location_tier_from_pincode(user_data[user_phone]['pincode'])
-                app.logger.debug(f"Location Tier received: {location_tier}")      
+                app.logger.debug(f"State tariffs: {state_tariffs}, Location tier: {location_tier}")
 
-                option_num = 1      
-                sq_ft_per_kw = 120  # 1 kW requires 120 sq ft of area
-
-                # calculate generation for recommended system size - 1
-                if (user_data[user_phone]['recommended_system_size'] - 1 > 0):
-                    user_data[user_phone]['monthly_ac_generation_minus_1'] = []
-                    for generation_per_month in monthly_ac_generation_per_kW:
-                        user_data[user_phone]['monthly_ac_generation_minus_1'].append(generation_per_month*(user_data[user_phone]['recommended_system_size']-1))
-                    app.logger.debug(f"Received monthly ac generation _minus_1 : {user_data[user_phone]['monthly_ac_generation_minus_1'] }")                   
-
-                    # Calculate monthly savings
-                    user_data[user_phone]['monthly_savings_minus_1'] = calculate_monthly_savings_with_solar(monthly_energy_consumption, user_data[user_phone]['monthly_ac_generation_minus_1'], state_tariffs)
-                    app.logger.debug(f"Received Monthly savings _minus_1: {user_data[user_phone]['monthly_savings_minus_1']}")                   
-                    user_data[user_phone]['yearly_savings_minus_1'] = calculate_yearly_savings(user_data[user_phone]['monthly_savings_minus_1'])
-                    app.logger.debug(f"Received Yearly savings _minus_1: {user_data[user_phone]['yearly_savings_minus_1']}")                   
-
-                    # calculating overall cost, subsidy from location tier
-                    recommended_final_cost_minus_1 = calculate_cost_and_subsidy((user_data[user_phone]['recommended_system_size']-1), location_tier)
-                    app.logger.debug(f"Recommended final cost _minus_1 is : {recommended_final_cost_minus_1}")                   
-                    
-                    # Round estimated costs up to the nearest lakhs with two decimal places
-                    final_cost_lakhs_minus_1 = round(recommended_final_cost_minus_1 / 100000, 1)
-                    app.logger.debug(f"Step 1 completed")                   
-
-                    final_saving_thousands_minus_1 = round(user_data[user_phone]['yearly_savings_minus_1'] / 1000, 1)
-                    app.logger.debug(f"Step 2 completed")                   
-
-                    #ROI
-                    user_data[user_phone]['roi_minus_1'] = round((user_data[user_phone]['yearly_savings_minus_1'] / float(recommended_final_cost_minus_1))*100,1)
-                    app.logger.debug(f"Step 3 completed")                   
-
-                    #Terrace Coverage
-                    user_data[user_phone]['terrace_coverage_minus_1'] = round(((user_data[user_phone]['recommended_system_size']-1) * sq_ft_per_kw)/( user_data[user_phone]['rooftop_area'])*100,1)
-                    app.logger.debug(f"Step 4 completed")                   
-
-                    response_text = (
-                        f"Option : {option_num}\n"
-                        f"System size: {(user_data[user_phone]['recommended_system_size']-1)} kW\n"
-                        f"Estimated cost: Around ₹{final_cost_lakhs_minus_1} Lakhs after subsidy.\n"
-                        f"Terrace Coverage: Around {user_data[user_phone]['terrace_coverage_minus_1']}%.\n"
-                        f"Estimated yearly savings: ₹{final_saving_thousands_minus_1} Thousand.\n"
-                        f"Estimated ROI: {user_data[user_phone]['roi_minus_1']}% every year.\n\n"
-                    )
-
-                    option_num += 1
-                    app.logger.debug(f"Exited _minus_1 calcultion with option_num: {option_num}")
-
-                # calculate generation for recommended system size
-                user_data[user_phone]['monthly_ac_generation'] = []
-                for generation_per_month in monthly_ac_generation_per_kW:
-                    user_data[user_phone]['monthly_ac_generation'].append(generation_per_month*user_data[user_phone]['recommended_system_size'])
-                app.logger.debug(f"Received monthly ac generation: {user_data[user_phone]['monthly_ac_generation'] }")                   
-
-                # Calculate monthly savings                 
-                user_data[user_phone]['monthly_savings'] = calculate_monthly_savings_with_solar(monthly_energy_consumption, user_data[user_phone]['monthly_ac_generation'], state_tariffs)
-                app.logger.debug(f"Received Monthly savings: {user_data[user_phone]['monthly_savings']}")                   
-                user_data[user_phone]['yearly_savings'] = calculate_yearly_savings(user_data[user_phone]['monthly_savings'])
-                app.logger.debug(f"Received Yearly savings: {user_data[user_phone]['yearly_savings']}")                   
-
-                # calculating overall cost, subsidy from location tier             
-                recommended_final_cost = calculate_cost_and_subsidy(user_data[user_phone]['recommended_system_size'], location_tier)
-                app.logger.debug(f"Recommended final cost is : {recommended_final_cost}")                   
-                
-                # Round estimated costs up to the nearest lakhs with two decimal places
-                final_cost_lakhs = round(recommended_final_cost / 100000, 1)
-                final_saving_thousands = round(user_data[user_phone]['yearly_savings'] / 1000, 1)
-
-                #ROI
-                user_data[user_phone]['roi'] = round((user_data[user_phone]['yearly_savings'] / float(recommended_final_cost))*100,1)
-
-                user_data[user_phone]['terrace_coverage'] = round(((user_data[user_phone]['recommended_system_size']) * sq_ft_per_kw)/( user_data[user_phone]['rooftop_area'])*100,1)
-
-                response_text += (
-                    f"Option {option_num}: \n"
-                    f"System size: {user_data[user_phone]['recommended_system_size']} kW\n"
-                    f"Estimated cost: Around ₹{final_cost_lakhs} Lakhs after subsidy.\n"
-                    f"Terrace Coverage: Around {user_data[user_phone]['terrace_coverage']}%.\n"
-                    f"Estimated yearly savings: ₹{final_saving_thousands} Thousand.\n"
-                    f"Estimated ROI: {user_data[user_phone]['roi']}% every year.\n\n"
-                )
-                option_num += 1
-
-                # calculate generation for recommended system size + 1
-                user_data[user_phone]['monthly_ac_generation_plus_1'] = []
-                for generation_per_month in monthly_ac_generation_per_kW:
-                    user_data[user_phone]['monthly_ac_generation_plus_1'].append(generation_per_month*(user_data[user_phone]['recommended_system_size']+1))
-                app.logger.debug(f"Received monthly ac generation for plus 1: {user_data[user_phone]['monthly_ac_generation_plus_1'] }")                   
-
-                # Calculate monthly savings
-                user_data[user_phone]['monthly_savings_plus_1'] = calculate_monthly_savings_with_solar(monthly_energy_consumption, user_data[user_phone]['monthly_ac_generation_plus_1'], state_tariffs)
-                app.logger.debug(f"Received Monthly savings for plus 1: {user_data[user_phone]['monthly_savings_plus_1']}")                   
-                user_data[user_phone]['yearly_savings_plus_1'] = calculate_yearly_savings(user_data[user_phone]['monthly_savings_plus_1'])
-                app.logger.debug(f"Received Yearly savings for plus 1: {user_data[user_phone]['yearly_savings_plus_1']}")                   
-
-                # calculating overall cost, subsidy from location tier
-                recommended_final_cost_plus_1 = calculate_cost_and_subsidy((user_data[user_phone]['recommended_system_size']+1), location_tier)
-                app.logger.debug(f"Recommended final cost for plus 1 is : {recommended_final_cost_plus_1}")                   
-                
-                # Round estimated costs up to the nearest lakhs with two decimal places
-                final_cost_lakhs_plus_1 = round(recommended_final_cost_plus_1 / 100000, 1)
-                final_saving_thousands_plus_1 = round(user_data[user_phone]['yearly_savings_plus_1'] / 1000, 1)
-
-                #ROI
-                user_data[user_phone]['roi_plus_1'] = round((user_data[user_phone]['yearly_savings_plus_1'] / float(recommended_final_cost_plus_1))*100,1)
-
-                user_data[user_phone]['terrace_coverage_plus_1'] = round(((user_data[user_phone]['recommended_system_size']+1) * sq_ft_per_kw)/( user_data[user_phone]['rooftop_area'])*100,1)
-
-                response_text += (
-                    f"Option {option_num}: \n"
-                    f"System size: {(user_data[user_phone]['recommended_system_size']+1)} kW\n"
-                    f"Estimated cost: Around ₹{final_cost_lakhs_plus_1} Lakhs after subsidy.\n"
-                    f"Terrace Coverage: Around {user_data[user_phone]['terrace_coverage_plus_1']}%.\n"
-                    f"Estimated yearly savings: ₹{final_saving_thousands_plus_1} Thousand.\n"
-                    f"Estimated ROI: {user_data[user_phone]['roi_plus_1']}% every year.\n\n"
+                # Calculate optimal system size
+                app.logger.debug("Calculating optimal system size")
+                optimal_size = find_optimal_system_size(
+                    monthly_energy_consumption,
+                    rooftop_area,
+                    monthly_ac_generation_per_kW,
+                    state_tariffs,
+                    location_tier
                 )
 
-                option_num += 1
+                # Round sizes to nearest integer
+                full_offset_size = round(full_offset_size)
+                half_offset_size = round(half_offset_size)
+                optimal_size = round(optimal_size)
+                app.logger.debug(f"Rounded system sizes - Full: {full_offset_size}kW, Half: {half_offset_size}kW, Optimal: {optimal_size}kW")
 
-                if (user_data[user_phone]['recommended_system_size'] - 1 == 0):
-                    # calculate generation for recommended system size + 2
-                    user_data[user_phone]['monthly_ac_generation_plus_2'] = []
-                    for generation_per_month in monthly_ac_generation_per_kW:
-                        user_data[user_phone]['monthly_ac_generation_plus_2'].append(generation_per_month*(user_data[user_phone]['recommended_system_size']+2))
-                    app.logger.debug(f"Received monthly ac generation for plus 2: {user_data[user_phone]['monthly_ac_generation_plus_2'] }")                   
+                # Calculate generation for all options
+                monthly_ac_generation_full = [g * full_offset_size for g in monthly_ac_generation_per_kW]
+                monthly_ac_generation_half = [g * half_offset_size for g in monthly_ac_generation_per_kW]
+                monthly_ac_generation_optimal = [g * optimal_size for g in monthly_ac_generation_per_kW]
+                app.logger.debug(f"Monthly generation for full offset: {monthly_ac_generation_full}")
+                app.logger.debug(f"Monthly generation for half offset: {monthly_ac_generation_half}")
+                app.logger.debug(f"Monthly generation for optimal size: {monthly_ac_generation_optimal}")
 
-                    # Calculate monthly savings
-                    user_data[user_phone]['monthly_savings_plus_2'] = calculate_monthly_savings_with_solar(monthly_energy_consumption, user_data[user_phone]['monthly_ac_generation_plus_2'], state_tariffs)
-                    app.logger.debug(f"Received Monthly savings for plus 2: {user_data[user_phone]['monthly_savings_plus_2']}")                   
-                    user_data[user_phone]['yearly_savings_plus_2'] = calculate_yearly_savings(user_data[user_phone]['monthly_savings_plus_2'])
-                    app.logger.debug(f"Received Yearly savings for plus 2: {user_data[user_phone]['yearly_savings_plus_2']}")                   
+                # Calculate savings for all options
+                app.logger.debug("Calculating savings for full offset")
+                monthly_savings_full = calculate_monthly_savings_with_solar(
+                    monthly_energy_consumption, 
+                    monthly_ac_generation_full, 
+                    state_tariffs
+                )
+                yearly_savings_full = round(calculate_yearly_savings(monthly_savings_full) / 1000)
+                app.logger.debug(f"Monthly savings full: {monthly_savings_full}, Yearly: {yearly_savings_full} Thousand")
 
-                    # calculating overall cost, subsidy from location tier
-                    recommended_final_cost_plus_2 = calculate_cost_and_subsidy((user_data[user_phone]['recommended_system_size']+2), location_tier)
-                    app.logger.debug(f"Recommended final cost for plus 2 is : {recommended_final_cost_plus_2}")                   
+                app.logger.debug("Calculating savings for half offset")
+                monthly_savings_half = calculate_monthly_savings_with_solar(
+                    monthly_energy_consumption, 
+                    monthly_ac_generation_half, 
+                    state_tariffs
+                )
+                yearly_savings_half = round(calculate_yearly_savings(monthly_savings_half) / 1000)
+                app.logger.debug(f"Monthly savings half: {monthly_savings_half}, Yearly: {yearly_savings_half} Thousand")
+
+                app.logger.debug("Calculating savings for optimal size")
+                monthly_savings_optimal = calculate_monthly_savings_with_solar(
+                    monthly_energy_consumption, 
+                    monthly_ac_generation_optimal, 
+                    state_tariffs
+                )
+                yearly_savings_optimal = round(calculate_yearly_savings(monthly_savings_optimal) / 1000)
+                app.logger.debug(f"Monthly savings optimal: {monthly_savings_optimal}, Yearly: {yearly_savings_optimal} Thousand")
+
+                # Calculate costs for all options
+                final_cost_full = round(calculate_cost_and_subsidy(full_offset_size, location_tier) / 100000, 2)
+                final_cost_half = round(calculate_cost_and_subsidy(half_offset_size, location_tier) / 100000, 2)
+                final_cost_optimal = round(calculate_cost_and_subsidy(optimal_size, location_tier) / 100000, 2)
+                app.logger.debug(f"Final costs - Full: ₹{final_cost_full} Lakhs, Half: ₹{final_cost_half} Lakhs, Optimal: ₹{final_cost_optimal} Lakhs")
+
+                # Calculate ROI for all options
+                roi_full = round((yearly_savings_full * 1000 / (final_cost_full * 100000)) * 100, 1)
+                roi_half = round((yearly_savings_half * 1000 / (final_cost_half * 100000)) * 100, 1)
+                roi_optimal = round((yearly_savings_optimal * 1000 / (final_cost_optimal * 100000)) * 100, 1)
+                app.logger.debug(f"ROI calculations - Full: {roi_full}%, Half: {roi_half}%, Optimal: {roi_optimal}%")
+
+                # Calculate terrace coverage for all options
+                terrace_coverage_full = round((full_offset_size * 120) / rooftop_area * 100, 1)
+                terrace_coverage_half = round((half_offset_size * 120) / rooftop_area * 100, 1)
+                terrace_coverage_optimal = round((optimal_size * 120) / rooftop_area * 100, 1)
+                app.logger.debug(f"Terrace coverage - Full: {terrace_coverage_full}%, Half: {terrace_coverage_half}%, Optimal: {terrace_coverage_optimal}%")
+
+                # Format response with all three options
+                response_text = (
+                    f"Option 1 - Zero Electricity Bill:\n"
+                    f"System size: {full_offset_size} kW\n"
+                    f"Estimated cost: Around ₹{final_cost_full} Lakhs after subsidy\n"
+                    f"Terrace Coverage: Around {terrace_coverage_full}%\n"
+                    f"Estimated yearly savings: ₹{yearly_savings_full} Thousand\n"
+                    f"Estimated ROI: {roi_full}% every year\n\n"
                     
-                    # Round estimated costs up to the nearest lakhs with two decimal places
-                    final_cost_lakhs_plus_2 = round(recommended_final_cost_plus_2 / 100000, 1)
-                    final_saving_thousands_plus_2 = round(user_data[user_phone]['yearly_savings_plus_2'] / 1000, 1)
-
-                    #ROI
-                    user_data[user_phone]['roi_plus_2'] = round((user_data[user_phone]['yearly_savings_plus_2'] / float(recommended_final_cost_plus_2))*100,1)
+                    f"Option 2 - Half Electricity Bill:\n"
+                    f"System size: {half_offset_size} kW\n"
+                    f"Estimated cost: Around ₹{final_cost_half} Lakhs after subsidy\n"
+                    f"Terrace Coverage: Around {terrace_coverage_half}%\n"
+                    f"Estimated yearly savings: ₹{yearly_savings_half} Thousand\n"
+                    f"Estimated ROI: {roi_half}% every year\n\n"
                     
-                    user_data[user_phone]['terrace_coverage_plus_2'] = round(((user_data[user_phone]['recommended_system_size']+2) * sq_ft_per_kw)/( user_data[user_phone]['rooftop_area'])*100,1)
-
-                    response_text += (
-                        f"Option {option_num}: \n"
-                        f"System size: {(user_data[user_phone]['recommended_system_size']+2)} kW\n"
-                        f"Estimated cost: Around ₹{final_cost_lakhs_plus_2} Lakhs after subsidy.\n"
-                        f"Terrace Coverage: Around {user_data[user_phone]['terrace_coverage_plus_2']}%.\n"
-                        f"Estimated yearly savings: ₹{final_saving_thousands_plus_2} Thousand.\n"
-                        f"Estimated ROI: {user_data[user_phone]['roi_plus_2']}% every year.\n\n"
-                    )
-
-                if (user_data[user_phone]['roi_minus_1'] is not None):
-                    user_data[user_phone]['max_roi'] = max(user_data[user_phone]['roi_minus_1'], user_data[user_phone]['roi'], user_data[user_phone]['roi_plus_1'])
-                    if user_data[user_phone]['max_roi'] == user_data[user_phone]['roi_minus_1']:
-                        user_data[user_phone]['recommended_option'] = 1
-                    elif user_data[user_phone]['max_roi'] == user_data[user_phone]['roi']:
-                        user_data[user_phone]['recommended_option'] = 2
-                    else:
-                        user_data[user_phone]['recommended_option'] = 3
-                else:
-                    user_data[user_phone]['max_roi'] = max(user_data[user_phone]['roi'], user_data[user_phone]['roi_plus_1'], user_data[user_phone]['roi_plus_2'])                    
-                    if user_data[user_phone]['max_roi'] == user_data[user_phone]['roi']:
-                        user_data[user_phone]['recommended_option'] = 1
-                    elif user_data[user_phone]['max_roi'] == user_data[user_phone]['roi_plus_1']:
-                        user_data[user_phone]['recommended_option'] = 2
-                    else:
-                        user_data[user_phone]['recommended_option'] = 3
-
-                response_text += (
-                    f"Our recommendation is Option: {user_data[user_phone]['recommended_option']} \n"
+                    f"Option 3 - Maximum Returns:\n"
+                    f"System size: {optimal_size} kW\n"
+                    f"Estimated cost: Around ₹{final_cost_optimal} Lakhs after subsidy\n"
+                    f"Terrace Coverage: Around {terrace_coverage_optimal}%\n"
+                    f"Estimated yearly savings: ₹{yearly_savings_optimal} Thousand\n"
+                    f"Estimated ROI: {roi_optimal}% every year\n"
                 )
 
-
-                app.logger.debug(f"Response: {response_text}")
+                app.logger.debug(f"Final response text: {response_text}")
                 send_message(response_text, user_phone)
                 return jsonify({"status": "success", "response": response_text}), 200
 
